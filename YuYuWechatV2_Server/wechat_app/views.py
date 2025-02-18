@@ -233,3 +233,35 @@ def get_dialogs_by_time_blocks_view(request):
             return JsonResponse({'status': 'error', 'error': str(e)}, status=500)
     else:
         return JsonResponse({'error': 'Invalid request method'}, status=405)
+
+
+@csrf_exempt
+def at_view(request):
+    """
+    在群聊中@某人或@所有人
+    """
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            name = data.get('name')  # 群聊名称
+            at_name = data.get('at_name', '')  # 要@的人的昵称，空字符串表示@所有人
+            search_user = data.get('search_user', True)  # 是否需要搜索用户
+
+            # 检查必要参数
+            if not name:
+                return JsonResponse({'error': 'Missing name parameter'}, status=400)
+
+            # 使用全局锁来保证线程安全
+            with lock:
+                comtypes.CoInitialize()  # 初始化COM接口，防止线程冲突
+                wechat.at(name, at_name, search_user)
+
+            return JsonResponse({
+                'status': 'success',
+                'message': f'Successfully at {"all users" if not at_name else at_name} in group {name}'
+            }, status=200)
+
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'error': str(e)}, status=500)
+    else:
+        return JsonResponse({'error': 'Invalid request method'}, status=405)

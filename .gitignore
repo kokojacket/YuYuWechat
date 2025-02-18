@@ -7,3 +7,5 @@ YuYuWechatV2_Client/celerybeat-schedule.db
 /YuYuWechatV2_Server/.idea/workspace.xml
 /YuYuWechatV2_Server/.idea/YuYuWechatV2_Server.iml
 /YuYuWechatV2_Client/db_backup.json
+YuYuWechatV2_Client/client_app/management/commands/batch_add_messages.py
+YuYuWechatV2_Client/client_app/management/commands/batch_update_and_send_messages.py
