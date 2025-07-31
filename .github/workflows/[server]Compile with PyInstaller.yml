@@ -44,9 +44,20 @@ jobs:
             Write-Output "Test failed"
             exit 1
           }
+          
+      # 手动触发时，将构建产物上传为工作流制品
+      - name: Upload build artifacts
+        if: github.event_name == 'workflow_dispatch' && env.test_passed == 'true'
+        uses: actions/upload-artifact@v2
+        with:
+          name: YuYuWechatV2_Server
+          path: |
+            ./YuYuWechatV2_Server/dist/YuYuWechatV2_Server.exe
+            ./YuYuWechatV2_Server/dist/YuYuWechatV2_Server_run.bat
 
+      # 只在Release触发时上传到Release资产
       - name: Upload release exe
-        if: env.test_passed == 'true'
+        if: github.event_name == 'release' && env.test_passed == 'true'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -57,7 +68,7 @@ jobs:
           asset_content_type: application/octet-stream
 
       - name: Upload release bat
-        if: env.test_passed == 'true'
+        if: github.event_name == 'release' && env.test_passed == 'true'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
