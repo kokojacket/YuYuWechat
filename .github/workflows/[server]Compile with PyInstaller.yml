@@ -1,6 +1,8 @@
 name: server_Compile with PyInstaller
 
 on:
+  workflow_dispatch:
+    # 手动触发
   release:
     types: [created]
 
