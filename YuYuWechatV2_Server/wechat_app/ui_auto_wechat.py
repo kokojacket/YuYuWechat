@@ -103,13 +103,14 @@ class WeChat:
         send_button = auto.ButtonControl(Depth=15, Name=self.lc.send)
         click(send_button)
 
-    def at(self, name, at_name, search_user: bool = True) -> None:
+    def at(self, name, at_name, search_user: bool = True, text: str = "") -> None:
         """
-        在指定群聊中@他人（若@所有人需具备@所有人权限）
+        在指定群聊中@他人（若@所有人需具备@所有人权限），可选发送文本消息
         Args:
             name:  群聊名称
             at_name: 要@的人的昵称
             search_user: 是否需要搜索群聊
+            text: 要发送的文本消息（可选）
         """
         if search_user:
             self.get_contact(name)
@@ -117,12 +118,22 @@ class WeChat:
         # 如果at_name为空则代表@所有人
         if at_name == "":
             auto.SendKeys("@{UP}{enter}")
+            # 如果有文本消息，添加到@所有人后面
+            if text:
+                pyperclip.copy(text)
+                time.sleep(0.3)
+                auto.SendKeys("{Ctrl}v")
             self.press_enter()
 
         else:
             auto.SendKeys(f"@{at_name}")
             # 按下回车键确认要at的人
             auto.SendKeys("{enter}")
+            # 如果有文本消息，添加到@用户后面
+            if text:
+                pyperclip.copy(text)
+                time.sleep(0.3)
+                auto.SendKeys("{Ctrl}v")
             self.press_enter()
 
     def send_msg(self, name, text, search_user: bool = True) -> bool:

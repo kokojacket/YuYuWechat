@@ -24,6 +24,7 @@ class SendMessageSerializer(serializers.Serializer):
 class AtUserSerializer(serializers.Serializer):
     name = serializers.CharField(help_text="群聊名称")
     at_name = serializers.CharField(help_text="要@的用户名称，空字符串表示@所有人")
+    text = serializers.CharField(help_text="要发送的文本消息内容（可选）", required=False, allow_blank=True)
 
 # 通用的消息/操作响应序列化器
 class OperationResponseSerializer(serializers.Serializer):
@@ -332,7 +333,7 @@ def get_dialogs_by_time_blocks_view(request):
 
 
 @extend_schema(
-    summary="在群聊中@用户或@所有人",
+    summary="在群聊中@用户或@所有人，可选发送文本消息",
     request=AtUserSerializer,
     responses={
         200: OpenApiResponse(response=OperationResponseSerializer, description='@用户成功'),
@@ -345,12 +346,13 @@ def get_dialogs_by_time_blocks_view(request):
 @csrf_exempt
 def at_user(request):
     """
-    在群聊中@用户或@所有人
+    在群聊中@用户或@所有人，可选发送文本消息
     """
     try:
         data = json.loads(request.body)
         name = data.get('name')
         at_name = data.get('at_name')
+        text = data.get('text', '')  # 可选参数，默认为空字符串
 
         if not name:
             return JsonResponse({'status': 'error', 'error': 'Missing name parameter'}, status=400)
@@ -362,7 +364,8 @@ def at_user(request):
             # 直接调用at方法，不使用队列
             comtypes.CoInitialize()
             with lock:  # 确保微信操作的线程安全
-                wechat.at(name, at_name)
+                # 调用修改后的at方法，传入文本参数
+                wechat.at(name, at_name, search_user=True, text=text)
             return JsonResponse({'status': 'At user success', 'name': name})
         except Exception as e:
             return JsonResponse({'status': 'Error at user', 'name': name, 'error': str(e)}, status=500)
