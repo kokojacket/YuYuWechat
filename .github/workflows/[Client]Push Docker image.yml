@@ -1,8 +1,8 @@
 name: Client_Push Docker image
 
 on:
-  release:
-    types: [ created ]
+  workflow_dispatch:
+    # 手动触发
 
 jobs:
   test:

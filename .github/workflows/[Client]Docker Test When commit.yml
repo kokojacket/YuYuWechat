@@ -1,8 +1,8 @@
 name: Client_Docker Test When commit.yml
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+    # 手动触发
 
 jobs:
   test:

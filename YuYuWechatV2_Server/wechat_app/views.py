@@ -20,6 +20,11 @@ class SendMessageSerializer(serializers.Serializer):
     name = serializers.CharField(help_text="接收消息的联系人或群聊名称")
     text = serializers.CharField(help_text="要发送的文本消息内容")
 
+# 为 at_user 定义请求体的序列化器
+class AtUserSerializer(serializers.Serializer):
+    name = serializers.CharField(help_text="群聊名称")
+    at_name = serializers.CharField(help_text="要@的用户名称，空字符串表示@所有人")
+
 # 通用的消息/操作响应序列化器
 class OperationResponseSerializer(serializers.Serializer):
     status = serializers.CharField()
@@ -322,5 +327,47 @@ def get_dialogs_by_time_blocks_view(request):
         return JsonResponse({'status': 'success', 'dialogs': groups}, status=200,
                             json_dumps_params={'ensure_ascii': False})
 
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'error': str(e)}, status=500)
+
+
+@extend_schema(
+    summary="在群聊中@用户或@所有人",
+    request=AtUserSerializer,
+    responses={
+        200: OpenApiResponse(response=OperationResponseSerializer, description='@用户成功'),
+        400: OpenApiResponse(response=OperationResponseSerializer, description='无效的请求参数'),
+        500: OpenApiResponse(response=OperationResponseSerializer, description='@用户失败或发生内部错误')
+    },
+    tags=['WeChat Actions']
+)
+@api_view(['POST'])
+@csrf_exempt
+def at_user(request):
+    """
+    在群聊中@用户或@所有人
+    """
+    try:
+        data = json.loads(request.body)
+        name = data.get('name')
+        at_name = data.get('at_name')
+
+        if not name:
+            return JsonResponse({'status': 'error', 'error': 'Missing name parameter'}, status=400)
+
+        # 创建响应队列
+        response_queue = Queue()
+
+        try:
+            # 直接调用at方法，不使用队列
+            comtypes.CoInitialize()
+            with lock:  # 确保微信操作的线程安全
+                wechat.at(name, at_name)
+            return JsonResponse({'status': 'At user success', 'name': name})
+        except Exception as e:
+            return JsonResponse({'status': 'Error at user', 'name': name, 'error': str(e)}, status=500)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'error': 'Invalid JSON'}, status=400)
     except Exception as e:
         return JsonResponse({'status': 'error', 'error': str(e)}, status=500)
