@@ -11,3 +11,4 @@ YuYuWechatV2_Client/celerybeat-schedule.db
 /YuYuWechatV2_Server/dist/YuYuWechatV2_Server.exe
 /YuYuWechatV2_Server/build/
 /YuYuWechatV2_NEW_Client/
+/YuYuWechatV2_Server/wechat_app/__pycache__/

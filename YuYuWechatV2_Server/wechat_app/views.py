@@ -11,8 +11,12 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes,
 from rest_framework import serializers # 导入 serializers
 from rest_framework.decorators import api_view # 导入 api_view
 
-from .models import WeChatConfig
+from .models import WeChatConfig, ClientConnection
 from .ui_auto_wechat import WeChat
+from .client_manager import client_manager, start_client_manager, send_command_to_client
+from django.contrib import messages
+from django.shortcuts import get_object_or_404
+from django.core.paginator import Paginator
 
 
 # 为 send_message 定义请求体的序列化器
@@ -66,12 +70,26 @@ class GetDialogsByTimeBlocksSerializer(serializers.Serializer):
 def home(request):
     return render(request, 'home.html')
 
-# 初始化 WeChat 类实例
-# wechat = WeChat(path="C:/Program Files/Tencent/WeChat/WeChat.exe", locale="zh-CN")
+# WeChat实例将在需要时动态创建，避免在模块导入时初始化Qt
+wechat = None
 
-# 获取微信配置，如果数据库中没有记录，则使用默认值
-config = WeChatConfig.objects.first()
-wechat = WeChat(path=config.path, locale=config.locale)
+def get_wechat_instance():
+    """
+    获取WeChat实例，延迟初始化以避免Qt错误
+    """
+    global wechat
+    if wechat is None:
+        try:
+            config = WeChatConfig.objects.first()
+            if config:
+                wechat = WeChat(path=config.path, locale=config.locale)
+            else:
+                # 使用默认配置创建
+                wechat = WeChat(path="C:/Program Files/Tencent/WeChat/WeChat.exe", locale="zh-CN")
+        except Exception as e:
+            # 如果创建失败，创建一个默认实例
+            wechat = WeChat(path="C:/Program Files/Tencent/WeChat/WeChat.exe", locale="zh-CN")
+    return wechat
 
 # 创建队列
 message_queue = Queue()
@@ -88,7 +106,7 @@ def process_queue():
             try:
                 comtypes.CoInitialize()
                 with lock:  # 确保微信操作的线程安全
-                    success = wechat.send_msg(name, text)
+                    success = get_wechat_instance().send_msg(name, text)
                 if success:
                     response_queue.put({'status': 'Message sent', 'name': name})
                 else:
@@ -108,7 +126,7 @@ def process_file_queue():
             try:
                 comtypes.CoInitialize()
                 with lock:  # 确保微信操作的线程安全
-                    wechat.send_file(name, file_path)
+                    get_wechat_instance().send_file(name, file_path)
                 response_queue.put({'status': 'File sent', 'name': name})
             except Exception as e:
                 response_queue.put({'status': 'Error sending file', 'name': name, 'error': str(e)})
@@ -227,7 +245,7 @@ def check_wechat_status(request):
     try:
         comtypes.CoInitialize()
         with lock:  # 确保微信操作的线程安全
-            wechat.prevent_offline()
+            get_wechat_instance().prevent_offline()
         return JsonResponse({'status': 'WeChat checked and prevent offline executed'}, status=200)
     except Exception as e:
         return JsonResponse({'status': 'Error', 'error': str(e)}, status=500)
@@ -273,7 +291,7 @@ def get_dialogs_view(request):
         # 使用全局锁来保证线程安全
         with lock:
             comtypes.CoInitialize()  # 初始化COM接口，防止线程冲突
-            dialogs = wechat.get_dialogs(name, n_msg)
+            dialogs = get_wechat_instance().get_dialogs(name, n_msg)
 
         # 返回获取到的聊天记录，并禁用ensure_ascii
         return JsonResponse({'status': 'success', 'dialogs': dialogs}, status=200, json_dumps_params={'ensure_ascii': False})
@@ -322,7 +340,7 @@ def get_dialogs_by_time_blocks_view(request):
         # 使用全局锁来保证线程安全
         with lock:
             comtypes.CoInitialize()  # 初始化COM接口，防止线程冲突
-            groups = wechat.get_dialogs_by_time_blocks(name, n_time_blocks)
+            groups = get_wechat_instance().get_dialogs_by_time_blocks(name, n_time_blocks)
 
         # 返回获取到的按时间分组的聊天记录，并禁用ensure_ascii
         return JsonResponse({'status': 'success', 'dialogs': groups}, status=200,
@@ -365,7 +383,7 @@ def at_user(request):
             comtypes.CoInitialize()
             with lock:  # 确保微信操作的线程安全
                 # 调用修改后的at方法，传入文本参数
-                wechat.at(name, at_name, search_user=True, text=text)
+                get_wechat_instance().at(name, at_name, search_user=True, text=text)
             return JsonResponse({'status': 'At user success', 'name': name})
         except Exception as e:
             return JsonResponse({'status': 'Error at user', 'name': name, 'error': str(e)}, status=500)
@@ -374,3 +392,326 @@ def at_user(request):
         return JsonResponse({'status': 'error', 'error': 'Invalid JSON'}, status=400)
     except Exception as e:
         return JsonResponse({'status': 'error', 'error': str(e)}, status=500)
+
+
+# === 客户端管理相关视图 ===
+
+def client_management(request):
+    """
+    客户端管理页面
+    """
+    # 启动客户端管理器
+    start_client_manager()
+    
+    connections = ClientConnection.objects.all().order_by('-last_connected_at')
+    
+    # 分页
+    paginator = Paginator(connections, 10)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+    
+    # 获取活跃连接状态
+    active_status = client_manager.get_connection_status()
+    active_dict = {status['stable_id']: status for status in active_status}
+    
+    context = {
+        'page_obj': page_obj,
+        'active_connections': active_dict,
+        'total_connections': connections.count(),
+        'active_count': len(active_status),
+    }
+    
+    return render(request, 'client_management.html', context)
+
+
+@csrf_exempt
+def create_client_connection(request):
+    """
+    创建新的客户端连接
+    """
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            
+            # 验证必需字段
+            name = data.get('name', '').strip()
+            ip_address = data.get('ip_address', '').strip()
+            port = data.get('port')
+            connection_key = data.get('connection_key', '').strip()
+            
+            if not all([name, ip_address, port, connection_key]):
+                return JsonResponse({
+                    'success': False,
+                    'error': '所有字段都是必需的'
+                }, status=400)
+            
+            try:
+                port = int(port)
+                if port <= 0 or port > 65535:
+                    raise ValueError("端口范围无效")
+            except (ValueError, TypeError):
+                return JsonResponse({
+                    'success': False,
+                    'error': '端口必须是1-65535之间的数字'
+                }, status=400)
+            
+            # 检查是否已存在相同的连接
+            existing = ClientConnection.objects.filter(
+                ip_address=ip_address, 
+                port=port
+            ).first()
+            
+            if existing:
+                return JsonResponse({
+                    'success': False,
+                    'error': f'连接 {ip_address}:{port} 已存在'
+                }, status=400)
+            
+            # 创建新连接
+            connection = ClientConnection.objects.create(
+                name=name,
+                ip_address=ip_address,
+                port=port,
+                connection_key=connection_key,
+                is_active=True,
+                client_version=data.get('client_version', ''),
+                client_features=data.get('client_features', [])
+            )
+            
+            return JsonResponse({
+                'success': True,
+                'message': '客户端连接创建成功',
+                'connection_id': str(connection.stable_id),
+                'redirect': '/wechat/client-management/'
+            })
+            
+        except json.JSONDecodeError:
+            return JsonResponse({
+                'success': False,
+                'error': '无效的JSON数据'
+            }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                'success': False,
+                'error': f'创建连接失败: {str(e)}'
+            }, status=500)
+    
+    return JsonResponse({'success': False, 'error': '仅支持POST请求'}, status=405)
+
+
+@csrf_exempt
+def connect_client(request):
+    """
+    连接到指定客户端
+    """
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            connection_id = data.get('connection_id')
+            
+            if not connection_id:
+                return JsonResponse({
+                    'success': False,
+                    'error': '缺少connection_id参数'
+                }, status=400)
+            
+            connection = get_object_or_404(ClientConnection, stable_id=connection_id)
+            
+            # 启动客户端管理器
+            start_client_manager()
+            
+            # 尝试连接
+            client_manager.connect_client(connection)
+            
+            return JsonResponse({
+                'success': True,
+                'message': f'正在连接到 {connection.name}...'
+            })
+            
+        except json.JSONDecodeError:
+            return JsonResponse({
+                'success': False,
+                'error': '无效的JSON数据'
+            }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                'success': False,
+                'error': f'连接失败: {str(e)}'
+            }, status=500)
+    
+    return JsonResponse({'success': False, 'error': '仅支持POST请求'}, status=405)
+
+
+@csrf_exempt
+def disconnect_client(request):
+    """
+    断开指定客户端连接
+    """
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            connection_id = data.get('connection_id')
+            
+            if not connection_id:
+                return JsonResponse({
+                    'success': False,
+                    'error': '缺少connection_id参数'
+                }, status=400)
+            
+            connection = get_object_or_404(ClientConnection, stable_id=connection_id)
+            
+            # 断开连接
+            client_manager.disconnect_client(connection)
+            
+            return JsonResponse({
+                'success': True,
+                'message': f'已断开与 {connection.name} 的连接'
+            })
+            
+        except json.JSONDecodeError:
+            return JsonResponse({
+                'success': False,
+                'error': '无效的JSON数据'
+            }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                'success': False,
+                'error': f'断开连接失败: {str(e)}'
+            }, status=500)
+    
+    return JsonResponse({'success': False, 'error': '仅支持POST请求'}, status=405)
+
+
+@csrf_exempt
+def delete_client_connection(request):
+    """
+    删除客户端连接
+    """
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            connection_id = data.get('connection_id')
+            
+            if not connection_id:
+                return JsonResponse({
+                    'success': False,
+                    'error': '缺少connection_id参数'
+                }, status=400)
+            
+            connection = get_object_or_404(ClientConnection, stable_id=connection_id)
+            
+            # 先断开连接
+            if connection.is_connected:
+                client_manager.disconnect_client(connection)
+            
+            # 删除记录
+            connection_name = connection.name
+            connection.delete()
+            
+            return JsonResponse({
+                'success': True,
+                'message': f'已删除客户端连接 {connection_name}'
+            })
+            
+        except json.JSONDecodeError:
+            return JsonResponse({
+                'success': False,
+                'error': '无效的JSON数据'
+            }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                'success': False,
+                'error': f'删除连接失败: {str(e)}'
+            }, status=500)
+    
+    return JsonResponse({'success': False, 'error': '仅支持POST请求'}, status=405)
+
+
+@csrf_exempt
+def get_client_status(request):
+    """
+    获取客户端连接状态
+    """
+    try:
+        # 获取活跃连接状态
+        active_status = client_manager.get_connection_status()
+        
+        # 获取数据库中的所有连接
+        all_connections = ClientConnection.objects.all()
+        
+        connections_data = []
+        active_dict = {status['stable_id']: status for status in active_status}
+        
+        for conn in all_connections:
+            conn_id = str(conn.stable_id)
+            active_info = active_dict.get(conn_id, {})
+            
+            connections_data.append({
+                'stable_id': conn_id,
+                'name': conn.name,
+                'ip_address': str(conn.ip_address),
+                'port': conn.port,
+                'is_active': conn.is_active,
+                'is_connected': bool(active_info),  # 实际连接状态
+                'created_at': conn.created_at.isoformat(),
+                'last_connected_at': conn.last_connected_at.isoformat() if conn.last_connected_at else None,
+                'last_heartbeat_at': conn.last_heartbeat_at.isoformat() if conn.last_heartbeat_at else None,
+                'reconnect_count': conn.reconnect_count,
+                'client_version': conn.client_version,
+                'connected_at': active_info.get('connected_at'),
+            })
+        
+        return JsonResponse({
+            'success': True,
+            'connections': connections_data,
+            'total_count': len(connections_data),
+            'active_count': len(active_status),
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'获取状态失败: {str(e)}'
+        }, status=500)
+
+
+@csrf_exempt
+def send_test_command(request):
+    """
+    向客户端发送测试命令
+    """
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            connection_id = data.get('connection_id')
+            command = data.get('command', 'ping')
+            params = data.get('params', {})
+            
+            if not connection_id:
+                return JsonResponse({
+                    'success': False,
+                    'error': '缺少connection_id参数'
+                }, status=400)
+            
+            connection = get_object_or_404(ClientConnection, stable_id=connection_id)
+            
+            # 发送命令
+            success, message = send_command_to_client(connection, command, params)
+            
+            return JsonResponse({
+                'success': success,
+                'message': message
+            })
+            
+        except json.JSONDecodeError:
+            return JsonResponse({
+                'success': False,
+                'error': '无效的JSON数据'
+            }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                'success': False,
+                'error': f'发送命令失败: {str(e)}'
+            }, status=500)
+    
+    return JsonResponse({'success': False, 'error': '仅支持POST请求'}, status=405)
